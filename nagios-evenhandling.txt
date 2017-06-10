@@ -1,0 +1,292 @@
+Nagios Core Eventhandling
+
+1) First add command into command.cfg on nagios server
+|)Go to this path and Add
+# vi /etc/nagios3/commands.cfg
+
+define command
+{
+command_name restart
+command_line /usr/lib/nagios/plugins/service_restart.sh
+}
+
+||)open this file /etc/nagios-plugins/config/check_nrpe.cfg and remove <$ARG2$>
+
+define command {
+        command_name    check_nrpe
+        command_line    /usr/lib/nagios/plugins/check_nrpe -H $HOSTADDRESS$ -c $ARG1$ <$ARG2$>
+}
+
+# this command runs a program $ARG1$ with no arguments
+define command {
+        command_name    check_nrpe_1arg
+        command_line    /usr/lib/nagios/plugins/check_nrpe -H $HOSTADDRESS$ -c $ARG1$
+}
+
+
+2) After that create a script for eventhandler on nagios server
+got to this path cd /usr/lib/nagios/plugins
+# vi service_restart.sh
+!/bin/bash
+/usr/lib/nagios/plugins/check_nrpe -H <HostIP>  -c  service_restart
+
+3)Modify your host.cfg file on nagios server like that got to this path
+#vi /etc/nagios3/conf.d/yourhost.cfg
+
+define service{
+        host_name                       yourhost
+        service_description             MY_Mysql
+        use                             generic-service
+        check_command                   check_nrpe!check_my_mysql
+        event_handler                   restart
+        max_check_attempts              4
+        event_handler_enabled           1
+        check_interval                  2
+
+}
+
+4)Now you have to modify your client server 
+If you want to monitor mysql by nrpe and eventhandling for mysql create a plugin for mysql check
+
+5)Go to this path for creating plugin
+#vi /usr/local/nagios/libexec/check_mysql.sh
+
+#!/bin/bash
+service mysql status | grep running
+case $? in
+0)
+echo "OK mysql is Running"
+exit 0
+;;
+1)
+echo "Critical mysql not running"
+exit 2
+;;
+*)
+echo "UNKONWN - Failed to connect"
+exit 3
+;;
+esac
+
+6)Add your command on cline server into nrpe.cfg.go to this path vi /usr/local/nagios/etc/nrpe.cfg
+open and into last
+
+#vi /usr/local/nagios/etc/nrpe.cfg
+ 
+
+command[check_my_mysql]=/usr/local/nagios/libexec/check_mysql.sh 
+command[service_restart]=sudo service mysql restart
+
+7)After that restart nrpe server
+
+#sudo service nagios-nrpe-server restart
+
+
+
+#####################################################
+NagiosXI monitor Mysql Service
+####################################################
+
+1)First create command on nagiosxi server dashboard
+
+command name-> check_mysql_connection
+command line-> $USER1$/check_mysql_new  $ARG1$  $ARG2$  $ARG3$
+
+2)create Service on nagiosxi server
+
+
+3)create script for check mysql servcie on nagiosxi console on this path:->/usr/local/nagios/libexec/check_mysql_new
+
+#!/bin/bash
+mysql -h $1 -u $2 -p$3  -e'use mysql'
+case $? in
+0)
+echo "OK - Connected with datadbase successfully"
+exit 0
+;;
+1)
+echo "CRITICAL - Failed to connect"
+exit 2
+;;
+*)
+echo "UNKNOWN - Failed to connect"
+exit 3
+;;
+esac
+#################################################
+
+4)For Eventhandling got to this path:->vi /usr/local/nagios/libexec/service_restart.sh
+
+#!/bin/bash
+case "$1" in
+OK)
+;;
+WARNING)
+;;
+UNKNOWN)
+;;
+CRITICAL)
+/usr/local/nagios/libexec/check_nrpe -H "$2" -p 5666 -c service_restart -a "$3"
+echo "The Host IP is : $2 and Service is : $3 state changed at $DATE with the error" > /tmp/service_linux_restart.txt
+;;
+esac
+exit 0
+########################################################
+
+5)After that go to the  client server to add command into this path:->vi /usr/local/nagios/etc/nrpe.cfg
+
+command[service_restart]=sudo service $ARG1$ restart
+
+##########################################################
+
+6)How to check volume of client server through yourself made plugin
+
+
+|)Go to the client server on this path  vi /usr/local/nagios/libexec/ and create your plugin
+
+# vi /usr/local/nagios/libexec/check_volume.sh
+
+
+#!/usr/bin/env bash
+
+# Nagios Exit Codes
+OK=0
+WARNING=1
+CRITICAL=2
+UNKNOWN=3
+
+usage()
+{
+cat <<EOF
+Check the capacity of a volume using df.
+     Options:
+        -v         Specify volume as mountpoint
+        -c         Critical threshold as an int (0-100)
+        -w         Warning threshold as an int (0-100)
+        -s         Skip threshold checks
+Usage: $0 -v /mnt -c 95 -w 90
+EOF
+}
+
+if [ $# -lt 6 ];
+then
+        usage
+        exit 1
+fi
+
+# Define now to prevent expected number errors
+VOL=/dev/sda1
+CRIT=0
+WARN=0
+SKIP=0
+OS=$(uname)
+
+while getopts "hc:sv:w:" OPTION
+do
+     case $OPTION in
+         h)
+             usage
+             ;;
+         c)
+             CRIT="$OPTARG"
+              ;;
+         s)
+             SKIP=1
+             ;;
+         v)
+             VOL="$OPTARG"
+             ;;
+         w)
+             WARN="$OPTARG"
+             ;;
+         \?)
+             exit 1
+             ;;
+     esac
+done
+
+if [[ $OS == AIX ]]; then
+        STATUS=$(df "$VOL" | awk '!/Filesystem/ { print $4 }' | sed 's/%//')
+        SIZE=$(df -P -m "$VOL" | awk '!/Filesystem/ { print $4 }')
+        USED=$(df -P -m "$VOL" | awk '!/Filesystem/ { print $3 }')
+else
+        STATUS=$(df -h "$VOL" | awk '!/Filesystem/ { print $5 }' | sed 's/%//')
+        SIZE=$(df -h "$VOL" | awk '!/Filesystem/ { print $2 }')
+        USED=$(df -h "$VOL" | awk '!/Filesystem/ { print $3 }')
+fi
+
+if [ $SKIP -eq 1 ]; then
+        echo "$VOL is at ${STATUS}% capacity, $USED of $SIZE (Threshold skipped)"
+        exit $OK
+fi
+
+if [ $STATUS -gt $CRIT ]; then
+        echo "$VOL is at ${STATUS} % capacity! $USED of $SIZE"
+        exit $CRITICAL
+elif [ $STATUS -gt $WARN ]; then
+        echo "$VOL is at ${STATUS} % capacity! $USED of $SIZE"
+        exit $WARNING
+else
+        echo "$VOL is at ${STATUS} % capacity, $USED of $SIZE"
+        exit $OK
+fi
+
+#########################################################################
+
+7)After that On client server go to this path /usr/local/nagios/etc/nrpe.cfg and add this command end the add
+
+command[check_volume]=/usr/local/nagios/libexec/check_volume.sh -v /dev/sda1 -w 10 -c 50
+
+########################################################################
+
+8)
+|.create command on nagiosxi server dashboard
+
+command name-> check_volume 	
+command line-> $USER1$/check_volume.sh $ARG1$
+
+||.cretae service on nagiosxi dashboard 
+
+check command-> check_nrpe
+
+|||)Pass Argument $ARG1$ -> check_volume
+
+check your plugin through check_nrpe and you also can check your made plugin manually
+
+/usr/local/nagios/libexec/check_nrpe -H 110.110.110.90 -t 30 -c check_volume 
+
+#########################################################
+
+9)How to check spooler service through nagiosxi to window client:
+
+|)First create command on nagiosxi dasboard
+
+command name-> check_spooler
+command line-> $USER1$/check_nrpe -H 110.110.110.52 -c check_spooler
+
+
+if you want to check manually use like that on nagiosxi console /usr/local/nagios/libexec/check_nrpe -H 110.110.110.52 -c check_spooler
+
+||)After that create bat file on window client machine and give name check_spooler.bat on this path C:\Program Files\NSClient++\scripts
+
+@echo off
+sc query spooler | find "STATE" | FINDSTR "RUNNING" > NUL
+
+IF %ERRORLEVEL% NEQ 0 GOTO err
+
+GOTO ok
+
+:err
+echo CRITICAL: Not Running
+exit /B 2
+
+:ok
+echo OK: Running
+exit /B 0
+
+|||)
+Now add command into the nsclient file on this path C:\Program Files\NSClient++
+
+[/settings/external scripts/scripts]
+#restart_service = scripts\restart_service.bat "$ARG1$"
+check_spooler = scripts\check_spooler.bat
